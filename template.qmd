@@ -66,28 +66,25 @@ damage_fn = get_depth_damage_function(dd.depths, dd.damages) # get the depth-dam
 ```
 
 ```{julia}
-gauge_dist = GeneralizedExtremeValue(5, 1, 0.1)
-offset = 4.31
-house_dist = GeneralizedExtremeValue(gauge_dist.μ - offset, gauge_dist.σ, gauge_dist.ξ)
+function single_year_cost_benefit(flood_dist, damage_fn, elevation_cost, house_area, house_value, Δh)
+    
+    # calculate the expected damages
+    gauge_dist = GeneralizedExtremeValue(5, 1, 0.1)
+    offset = 4.31
+   
+    house_dist = GeneralizedExtremeValue(gauge_dist.μ - offset, gauge_dist.σ, gauge_dist.ξ)
+    samples = rand(house_dist, 100_000) .* 1u"ft"
+    
+    damages = damage_fn.(samples)
+    expected_damages_pct = mean(damages)
+        
+    house_structure_value = 475_000 # estimated value of Katie's Seafood House on Zillow
+    expected_damages_usd = house_structure_value * expected_damages_pct / 100
+   
+    c_dmg = expected_damages_usd
 
-samples = rand(house_dist, 100_000) .* 1u"ft"
-damages = damage_fn.(samples)
-expected_damages_pct = mean(damages)
-```
-
-```{julia}
-house_structure_value = 475_000 # estimated value of Katie's Seafood House on Zillow
-expected_damages_usd = house_structure_value * expected_damages_pct / 100
-```
-
-Cost of elevating:
-```{julia}
-house_area = 1000u"ft^2"
-elevation_cost = get_elevation_cost_function()
-```
-
-```{julia}
-heights = uconvert.(u"ft", (0u"ft"):(1u"inch"):(10u"ft")) 
+    # calculate the cost of elevating
+    heights = uconvert.(u"ft", (0u"ft"):(1u"inch"):(10u"ft")) 
 plot(
     heights,
     elevation_cost.(heights, house_area);
@@ -96,9 +93,15 @@ plot(
     label="$(house_area)",
     tiitle="Cost of Elevating a House",
 )
+    house_area = 1000u"ft^2"
+    elevation_cost = get_elevation_cost_function()
+    
+    c_constr = elevation_cost
+
+    # return the total cost and benefit
+    return -c_constr - c_dmg
+end
 ```
-
-
 
 # NPV Function
 ```{julia}
@@ -107,6 +110,12 @@ function npv_cost_benefit(flood_dist, damage_fn, elevation_cost, house_area, hou
     # see above!
     return npv
 end
+```
+
+```{julia}
+annual_damages = [expected_damages_usd for _ in 1:10] # annual expected damages
+discount_rate = 0.05
+npv = sum(annual_damages .* (1 - discount_rate) .^ (0:9))
 ```
 
 # One SOW, several actions
