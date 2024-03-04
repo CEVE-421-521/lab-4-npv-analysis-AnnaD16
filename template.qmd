@@ -50,11 +50,6 @@ Plots.default(; margin=6Plots.mm)
 include("depthdamage.jl")
 ```
 
-```{julia}
-#| output: false
-include("depthdamage.jl")
-```
-
 
 # Single Year Function
 ```{julia}
@@ -66,66 +61,126 @@ damage_fn = get_depth_damage_function(dd.depths, dd.damages) # get the depth-dam
 ```
 
 ```{julia}
+gauge_dist = GeneralizedExtremeValue(5, 1, 0.1)
+offset = 4.31
+house_dist = GeneralizedExtremeValue(gauge_dist.μ-offset, gauge_dist.σ, gauge_dist.ξ)
+```
+
+```{julia}
 function single_year_cost_benefit(flood_dist, damage_fn, elevation_cost, house_area, house_value, Δh)
     
-    # calculate the expected damages
-    gauge_dist = GeneralizedExtremeValue(5, 1, 0.1)
-    offset = 4.31
-   
-    house_dist = GeneralizedExtremeValue(gauge_dist.μ - offset, gauge_dist.σ, gauge_dist.ξ)
-    samples = rand(house_dist, 100_000) .* 1u"ft"
-    
+    # Monte Carlo estimate of expected damages
+    samples = rand(flood_dist, 100_000) .* 1u"ft"
     damages = damage_fn.(samples)
     expected_damages_pct = mean(damages)
-        
-    house_structure_value = 475_000 # estimated value of Katie's Seafood House on Zillow
-    expected_damages_usd = house_structure_value * expected_damages_pct / 100
-   
-    c_dmg = expected_damages_usd
 
-    # calculate the cost of elevating
-    heights = uconvert.(u"ft", (0u"ft"):(1u"inch"):(10u"ft")) 
-plot(
-    heights,
-    elevation_cost.(heights, house_area);
-    xlabel="How High to Elevate",
-    ylabel="Cost (USD)",
-    label="$(house_area)",
-    tiitle="Cost of Elevating a House",
-)
-    house_area = 1000u"ft^2"
-    elevation_cost = get_elevation_cost_function()
+    # convert to USD
+    expected_damages_usd = house_value * expected_damages_pct / 100
+    c_dmg = expected_damages_usd
     
-    c_constr = elevation_cost
+    c_constr = elevation_cost(Δh, house_area)
 
     # return the total cost and benefit
     return -c_constr - c_dmg
 end
 ```
 
+
 # NPV Function
 ```{julia}
 function npv_cost_benefit(flood_dist, damage_fn, elevation_cost, house_area, house_value, Δh, T, discount_rate)
-    # calculate the costs and benefits for each year, and then discount
-    # see above!
+    # calculate the costs and benefits for each year
+    annual_bca = [
+        single_year_cost_benefit(flood_dist, damage_fn, elevation_cost, house_area, house_value, Δh * (year == 1))
+        for year in 1:T
+    ]
+
+    # then discount
+    weights = [(1 - discount_rate) ^ (t - 1) for t in 1:T]
+
+    # npv
+    weighted_bca = weights .* annual_bca
+    npv = sum(weighted_bca)
+
     return npv
 end
 ```
 
 ```{julia}
-annual_damages = [expected_damages_usd for _ in 1:10] # annual expected damages
-discount_rate = 0.05
-npv = sum(annual_damages .* (1 - discount_rate) .^ (0:9))
+elevation_cost = get_elevation_cost_function() # gives us a fitted interpolator
+house_area = 6272u"ft^2" 
+zillow_house_value_estimate =   500_000
+height_increase = 0u"ft"
+time_period_yrs = 50
+discount_rate = 0.02
+npv_cost_benefit(house_dist, damage_fn, elevation_cost, house_area, zillow_house_value_estimate, height_increase, time_period_yrs, discount_rate)
 ```
 
 # One SOW, several actions
+```{julia}
+elevation_cost = get_elevation_cost_function() # gives us a fitted interpolator
+house_area = 6272u"ft^2" 
+zillow_house_value_estimate = 500_000
+height_increase = 4u"ft"
+time_period_yrs = 50
+discount_rate = 0.02
+npv_cost_benefit(house_dist, damage_fn, elevation_cost, house_area, zillow_house_value_estimate, height_increase, time_period_yrs, discount_rate)
+```
+
+```{julia}
+height_increase = 8u"ft"
+npv_cost_benefit(house_dist, damage_fn, elevation_cost, house_area, zillow_house_value_estimate, height_increase, time_period_yrs, discount_rate)
+```
+
+```{julia}
+discount_rate = 0.1
+npv_cost_benefit(house_dist, damage_fn, elevation_cost, house_area, zillow_house_value_estimate, height_increase, time_period_yrs, discount_rate)
+```
 
 # Sensitivity test
+```{julia}
+using Random
+
+function monte_carlo_npv_estimate(house_dist, damage_fn, elevation_cost, house_area, zillow_house_value_estimate, height_increase, time_period_yrs, discount_rate)
+    mean_discount_rate = 0.04
+    std_discount_rate = 0.02
+
+    npv = zeros(num_iterations)
+    discount_rates = rand(Normal(mean_discount_rate, std_discount_rate), num_iterations)
+
+    # Calculating the NPV for each discount rate
+    for i in 1:num_iterations
+        npv[i] = npv_cost_benefit(house_dist, damage_fn, elevation_cost, house_area, zillow_house_value_estimate, height_increase, time_period_yrs, discount_rate)
+    end
+
+    expected_npv = mean(npv)
+        return expected_npv
+    end
+
+num_iterations = 100 
+
+expected_npv = monte_carlo_npv_estimate(house_dist, damage_fn, elevation_cost, house_area, zillow_house_value_estimate, height_increase, time_period_yrs, discount_rate)
+expected_npv
+```
 
 # Discussion
 1. What do you notice about the NPV for different actions?
+
+The NPV seems to decrease with every foot the restaurant is elevated, this seems counter intuitive however, the building is located right on the water which means it is unlikely to escape any damages in case of a flood. This suggests that it is not worth elevating this building as this would result in a heavy cost for no apparent benefit. When plugging in a much higher discount rate the NPV appears much better than with the other actions however, this is not a realistic approach to pursue.
+
 2. What do you notice about the sensitivity test?
+
+The sensitivity test predicts the mean NPV for various discount rates. Here it shows up as a negative number which suggests that there would be more costs than benefits if we were to elevate Katie's Seafood House any further. This number is also very similar to the one obtained above when calculating the SOW with a 0.1 discount rate. In short, adapting the discount rate seems to be more effective than elevating the builidng in terms of reducing the cost to benefit ratio.
+
 3. What are some limitations of this analysis?
     * What things are missing from this analysis that you think are important?
+    
+    This analysis does not take into account the uncertainties that come with climate change and future growth rates. With these being uncertain it is difficult to account for them even when deciding on a discount rate for example. 
+
     * How might they affect the results?
+   
+    This affects the results to be only partially reliable in predicting the costs and benefits of elevating the building further. Even though it may not seem worth it to elevate the restaurant with this current SOW it will likely change in the near future.
+
     * What are some ways you might address these limitations?
+    
+    One way would be to use a lower discount rate in order to avoid putting off higher costs further down the line and into the uncertain future. Even though the results look better with a higher discount rate the long run must also be taken into consideration because the future is uncertain.
